@@ -1,4 +1,4 @@
-# processing with study cohort
+### NBT classification ---------
 DE_TN <- readRDS("Total_raw.rds")
 TN_group <- ifelse(str_detect(colnames(DE_TN), "T"), "Tumor", "Normal" )
 tmp <- DGEList(counts=DE_TN, group = factor(TN_group))
@@ -26,3 +26,68 @@ names(T_top_list) <- c("TSG")
 gsva_normal <- gsva(tmp_log, T_top_list, mx.diff=F, verbose=F, parallel.sz=1, kcdf="Poisson", method="ssgsea", ssgsea.norm=FALSE)
 gsva_normal <- t(gsva_normal) %>% as.data.frame()
 gsva_normal$group <- ifelse(gsva_normal$TSG > mean(gsva_normal$TSG), "TSM", "HM")
+
+
+### single cell analysis ------------
+# Cellchat 
+library(CellChat)
+  
+cellchat <- createCellChat(object = seurat_obj, meta = seurat_obj@meta.data, group.by = "cellchat")
+groupSize <- as.numeric(table(cellchat@idents))
+CellChatDB <- CellChatDB.human 
+cellchat@DB <- CellChatDB
+cellchat <- subsetData(cellchat)
+cellchat <- identifyOverExpressedGenes(cellchat) 
+cellchat <- identifyOverExpressedInteractions(cellchat)
+cellchat <- computeCommunProb(cellchat,  population.size=T) 
+cellchat <- filterCommunication(cellchat, min.cells = 10)
+df.net <- subsetCommunication(cellchat)
+cellchat <- computeCommunProbPathway(cellchat)
+df.net_netP <- subsetCommunication(cellchat, slot.name="netP")
+cellchat <- aggregateNet(cellchat) 
+groupSize <- as.numeric(table(cellchat@idents))
+cellchat <- netAnalysis_computeCentrality(cellchat, slot.name="netP")
+
+
+# Monocle2 
+library(Seurat)
+library(monocle)
+
+count.mat <- as.matrix(seurat_obj@assays$RNA@counts)
+pd <- new('AnnotatedDataFrame', data = seurat_obj@meta.data)
+genes.df <- data.frame(apply(X = count.mat, 1, FUN = function(x) { sum(x > 0)} ))
+fd <- new('AnnotatedDataFrame', data = data.frame(gene_short_name = row.names(gene.df), row.names = row.names(gene.df), num_cells_expressed = gene.df[,1]))
+cds <- newCellDataSet(count.mat, phenoData = pd, featureData = fd, expressionFamily = negbinomial.size())
+
+cds <- estimateSizeFactors(cds)
+cds <- estimateDispersions(cds)
+
+set.seed(42)
+cds <- detectGenes(cds, min_expr = 0.1)
+cds <- cds[row.names(subset(fData(cds), num_cells_expressed >= 20)),]
+cds <- setOrderingFilter(cds, ordering_genes)
+cds <- reduceDimension(cds = cds, method = 'DDRTree')
+cds <- orderCells(cds)
+plot_cell_trajectory(cds, color_by = "subset")
+
+
+
+### 16S microbiome analysis ------------
+# beta diversity
+library(vegan)
+library(
+set.seed(36)
+
+genus_TSM <- genus %>% dplyr::filter(group=="TSM")
+beta_dist_TSM<-vegdist(genus_TSM[,7:780], method='bray')
+beta.div_TSM<-adonis2(beta_dist_TSM~as.factor(genus_TSM$tissue), data=genus_TSM, permutations=9999)
+dispersion_TSM<-betadisper(div_TSM, group=genus_TSM$tissue)
+
+TSM_bray_curtis_pcoa <- ecodist::pco(beta_dist_TSM)
+TSM_bray_curtis_pcoa_df <- data.frame(pcoa1 = TSM_bray_curtis_pcoa$vectors[,1], 
+                                  pcoa2 = TSM_bray_curtis_pcoa$vectors[,2])
+rownames(TSM_bray_curtis_pcoa_df) <- genus_TSM$PM_ID
+TSM_bray_curtis_pcoa_df <- merge(TSM_bray_curtis_pcoa_df, NBT_group, by.x = "row.names", by.y="PM_ID")
+ggplot(data = TSM_bray_curtis_pcoa_df, aes(x=pcoa1, y=pcoa2,color=tissue)) +
+  geom_point() +
+  stat_ellipse(aes(color = tissue, fill=tissue), type = "t",alpha=0.2, geom="polygon") 
